@@ -1,7 +1,8 @@
 name: Build Android APK
 
-# Compila la APK de UTMOST.FM MOBILE (carpeta android/) en la nube.
-# Se ejecuta al hacer push que toque android/, o manualmente desde la pestaña Actions.
+# Compila la APK de UTMOST.FM MOBILE (carpeta android/) nativamente en Ubuntu
+# (sin Docker, para evitar fallos del contenedor). Corre al hacer push que toque
+# android/, o manualmente desde la pestaña Actions.
 
 on:
   push:
@@ -12,23 +13,44 @@ on:
 
 jobs:
   build-apk:
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 trae libtinfo5 (lo necesitan las build-tools de Android)
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake \
+            libffi-dev libssl-dev build-essential ccache libltdl-dev
+
+      - name: Install Buildozer + Cython
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install "cython==0.29.36" buildozer
+
+      - name: Cache Buildozer global dir
+        uses: actions/cache@v4
         with:
-          command: buildozer android debug
-          workdir: android
-          buildozer_version: stable
+          path: |
+            ~/.buildozer
+            android/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('android/buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          yes | buildozer android debug || buildozer android debug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
