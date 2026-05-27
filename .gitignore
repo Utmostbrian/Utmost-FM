@@ -4,7 +4,7 @@ __pycache__/
 
 # PyInstaller build artifacts (los .exe finales SI se versionan, en dist/)
 build/
-*.spec
+/*.spec
 
 # Material de reconstruccion / fuentes originales (no son el producto)
 SevenFm_V2.exe
@@ -13,3 +13,8 @@ decompiled/
 
 # Herramientas locales
 .claude/
+
+# Buildozer (APK)
+android/.buildozer/
+android/bin/
+*.apk

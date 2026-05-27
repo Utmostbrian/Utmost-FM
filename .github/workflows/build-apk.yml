@@ -1,0 +1,38 @@
+name: Build Android APK
+
+# Compila la APK de UTMOST.FM MOBILE (carpeta android/) en la nube.
+# Se ejecuta al hacer push que toque android/, o manualmente desde la pestaña Actions.
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build with Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
+        with:
+          command: buildozer android debug
+          workdir: android
+          buildozer_version: stable
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UTMOST.FM-APK
+          path: android/bin/*.apk
+          if-no-files-found: error
