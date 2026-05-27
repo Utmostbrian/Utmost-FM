@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build artifacts (los .exe finales SI se versionan, en dist/)
+build/
+*.spec
+
+# Material de reconstruccion / fuentes originales (no son el producto)
+SevenFm_V2.exe
+SevenFm_V2.exe_extracted/
+decompiled/
+
+# Herramientas locales
+.claude/

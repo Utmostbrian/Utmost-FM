@@ -1,0 +1,9 @@
+pygame>=2.5
+mutagen>=1.47
+Pillow>=10.0
+requests>=2.31
+numpy>=1.26
+soundfile>=0.12
+# --- solo para player_pro.py (modo Studio/FL): LUFS preciso ITU-R BS.1770 ---
+# opcional: sin el, el LUFS cae a estimacion RMS etiquetada "approx"
+pyloudnorm>=0.1
