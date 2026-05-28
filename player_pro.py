@@ -754,7 +754,7 @@ def _apply_crt_filter(img):
 
 
 # ==============================================================================
-#   FUENTE ASCII 5x5 PARA RENDERIZAR EL NOMBRE DE USUARIO COMO ARTE EN BLOQUES
+#   FUENTE ASCII 5x5 PARA RENDERIZAR LA HORA COMO ARTE EN BLOQUES
 # ==============================================================================
 ASCII_FONT_5x5 = {
     'A': [' ██ ', '█  █', '████', '█  █', '█  █'],
@@ -1130,6 +1130,50 @@ class LocalAudioEngine:
                 if self.current_idx >= len(new_order):
                     self.current_idx = -1
         return len(new_tracks)
+
+    def add_folder(self, folder, progress_cb=None):
+        """Fusiona audios de una carpeta en la biblioteca actual sin borrar la cola."""
+        if not folder or not os.path.isdir(folder):
+            return 0
+        with self._lock:
+            known = {
+                os.path.normcase(os.path.abspath(t.get('path', '')))
+                for t in self.tracks
+            }
+
+        found = []
+        for root, dirs, files in os.walk(folder):
+            for fn in files:
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in AUDIO_EXTS:
+                    path = os.path.abspath(os.path.join(root, fn))
+                    if os.path.normcase(path) not in known:
+                        found.append(path)
+
+        metas = []
+        for i, path in enumerate(found):
+            metas.append(_extract_metadata(path))
+            if progress_cb:
+                try: progress_cb(i + 1, len(found))
+                except Exception: pass
+
+        added = 0
+        with self._lock:
+            known = {
+                os.path.normcase(os.path.abspath(t.get('path', '')))
+                for t in self.tracks
+            }
+            for meta in metas:
+                path_key = os.path.normcase(os.path.abspath(meta.get('path', '')))
+                if path_key in known:
+                    continue
+                self.tracks.append(meta)
+                self.queue_order.append(len(self.tracks) - 1)
+                known.add(path_key)
+                added += 1
+            if self.current_idx < 0 and self.queue_order:
+                self.current_idx = 0
+        return added
 
     # ----- control -----
     def play(self, qpos=None):
@@ -1899,7 +1943,9 @@ class ConfigWindow(tk.Toplevel):
                   font=('Courier', 8, 'bold'), bg=SURFACE0(), fg=MAIN(),
                   activebackground=SURFACE1(), activeforeground=MAIN_GLW(),
                   relief=tk.FLAT, cursor='hand2', bd=0, padx=10,
-                  command=lambda: self._pick_into(self.fl_export_entry)).pack(side='left', padx=(6, 0))
+                  command=lambda: self._pick_into(
+                      self.fl_export_entry,
+                      'Selecciona la carpeta de renders')).pack(side='left', padx=(6, 0))
 
         # carpeta samples
         tk.Label(outer, text=_T('cfg_fl_samples'),
@@ -1917,7 +1963,9 @@ class ConfigWindow(tk.Toplevel):
                   font=('Courier', 8, 'bold'), bg=SURFACE0(), fg=MAIN(),
                   activebackground=SURFACE1(), activeforeground=MAIN_GLW(),
                   relief=tk.FLAT, cursor='hand2', bd=0, padx=10,
-                  command=lambda: self._pick_into(self.fl_samples_entry)).pack(side='left', padx=(6, 0))
+                  command=lambda: self._pick_into(
+                      self.fl_samples_entry,
+                      'Selecciona la carpeta de samples')).pack(side='left', padx=(6, 0))
 
         # auto-reproducir render
         tk.Label(outer, text=_T('cfg_fl_autoplay'),
@@ -1991,16 +2039,47 @@ class ConfigWindow(tk.Toplevel):
         except Exception:
             pass
 
+    def _normalize_folder(self, folder):
+        folder = (folder or '').strip().strip('"')
+        if not folder:
+            return ''
+        return os.path.normpath(os.path.abspath(os.path.expanduser(folder)))
+
+    def _ask_directory(self, title, current=''):
+        current = self._normalize_folder(current)
+        initial = current if os.path.isdir(current) else os.path.expanduser('~')
+        try:
+            self.attributes('-topmost', False)
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            folder = filedialog.askdirectory(
+                parent=self.parent,
+                title=title,
+                initialdir=initial,
+                mustexist=True,
+            )
+        finally:
+            try:
+                self.lift()
+                self.focus_force()
+            except Exception:
+                pass
+        return self._normalize_folder(folder)
+
     def _pick_folder(self):
-        folder = filedialog.askdirectory(parent=self,
-                                         title='Selecciona la carpeta de musica')
+        folder = self._ask_directory(
+            'Selecciona la carpeta de musica',
+            self.folder_entry.get() or self._folder,
+        )
         if folder:
             self._folder = folder
             self.folder_entry.delete(0, 'end')
             self.folder_entry.insert(0, folder)
 
     def _do_rescan(self):
-        folder = self.folder_entry.get().strip()
+        folder = self._normalize_folder(self.folder_entry.get())
         if not folder or not os.path.isdir(folder):
             self.scan_lbl.configure(text='× ruta invalida', fg=PINK_ERR)
             return
@@ -2067,8 +2146,8 @@ class ConfigWindow(tk.Toplevel):
                 b.configure(fg=MAIN(), bg=SURFACE0())
 
     # ---- FL Studio (PRO) ----
-    def _pick_into(self, entry):
-        folder = filedialog.askdirectory(parent=self, title='Selecciona carpeta')
+    def _pick_into(self, entry, title='Selecciona carpeta'):
+        folder = self._ask_directory(title, entry.get())
         if folder:
             entry.delete(0, 'end')
             entry.insert(0, folder)
@@ -2092,11 +2171,13 @@ class ConfigWindow(tk.Toplevel):
                         bg=MAIN_GLW() if v == float(val) else SURFACE0())
 
     def _save(self):
-        folder = self.folder_entry.get().strip()
+        folder = self._normalize_folder(self.folder_entry.get())
         user = self.user_entry.get().strip() or 'User'
         # recoger config FL
-        self._fl['export_folder'] = self.fl_export_entry.get().strip()
-        self._fl['samples_folder'] = self.fl_samples_entry.get().strip()
+        self._fl['export_folder'] = self._normalize_folder(
+            self.fl_export_entry.get())
+        self._fl['samples_folder'] = self._normalize_folder(
+            self.fl_samples_entry.get())
         fl = dict(self._fl)
         save_credentials(folder, user, self._theme, self._lang,
                          self._spectrum, self._lyric, self._art, self._auto_theme, fl)
@@ -2415,9 +2496,14 @@ class SevenFMPlayer(tk.Tk):
         self._build_ui()
         self._set_titlebar_color()
 
-        # carga inicial de biblioteca
-        if folder and os.path.isdir(folder):
-            threading.Thread(target=self._scan_in_bg, args=(folder,), daemon=True).start()
+        # carga inicial de biblioteca + samples PRO
+        if ((folder and os.path.isdir(folder)) or
+                (self._fl_samples_folder and os.path.isdir(self._fl_samples_folder))):
+            threading.Thread(
+                target=self._scan_config_folders_in_bg,
+                args=(folder, self._fl_samples_folder),
+                daemon=True,
+            ).start()
 
         # binds
         self.bind('<Configure>', self._on_resize)
@@ -3595,10 +3681,24 @@ class SevenFMPlayer(tk.Tk):
             # guardar la nueva ruta como ultima usada
             try:
                 creds = load_credentials() or {}
+                fl = creds.get('fl', {}) or {}
+                if not fl:
+                    fl = {
+                        'watch': self._fl_watch,
+                        'export_folder': self._fl_export_folder,
+                        'samples_folder': self._fl_samples_folder,
+                        'autoplay': self._fl_autoplay,
+                        'target_lufs': self._fl_target_lufs,
+                    }
                 save_credentials(folder,
                                  creds.get('username', self.username),
                                  creds.get('theme', self._theme_name),
-                                 creds.get('lang', CURRENT_LANG))
+                                 creds.get('lang', CURRENT_LANG),
+                                 creds.get('spectrum_mode', self._spectrum_mode),
+                                 creds.get('lyric_style', self._lyric_style),
+                                 creds.get('art_style', self._art_style),
+                                 creds.get('auto_theme', self._auto_theme),
+                                 fl)
             except Exception:
                 pass
             # notificar al config
@@ -3633,8 +3733,13 @@ class SevenFMPlayer(tk.Tk):
         self.username = user or 'User'
         self.configure(bg=BG())
         self._refresh_theme()
-        if folder and os.path.isdir(folder):
-            threading.Thread(target=self._scan_in_bg, args=(folder,), daemon=True).start()
+        if ((folder and os.path.isdir(folder)) or
+                (self._fl_samples_folder and os.path.isdir(self._fl_samples_folder))):
+            threading.Thread(
+                target=self._scan_config_folders_in_bg,
+                args=(folder, self._fl_samples_folder),
+                daemon=True,
+            ).start()
 
     def _refresh_theme(self):
         """Rebuild de toda la UI preservando estado (pista, caratula, letras, status, vol)."""
@@ -3703,13 +3808,32 @@ class SevenFMPlayer(tk.Tk):
         self._update_queue_ui()
 
     # ------------------------------------------------------------------ Biblioteca
-    def _scan_in_bg(self, folder):
+    def _same_folder(self, a, b):
+        if not a or not b:
+            return False
+        try:
+            return (
+                os.path.normcase(os.path.abspath(a)) ==
+                os.path.normcase(os.path.abspath(b))
+            )
+        except Exception:
+            return False
+
+    def _scan_config_folders_in_bg(self, folder, samples_folder=''):
         self._ui_dispatch(self._set_status, 'linking')
-        n = self.audio.scan_folder(folder)
+        n = 0
+        if folder and os.path.isdir(folder):
+            n += self.audio.scan_folder(folder)
+        if (samples_folder and os.path.isdir(samples_folder) and
+                not self._same_folder(folder, samples_folder)):
+            n += self.audio.add_folder(samples_folder)
         self._ui_dispatch(self._set_status, 'online' if n else 'offline')
         self._ui_dispatch(self._update_queue_ui)
         if n and self.audio.current_idx < 0:
             self.audio.current_idx = 0
+
+    def _scan_in_bg(self, folder):
+        self._scan_config_folders_in_bg(folder)
 
     def _set_status(self, key):
         color = MAIN_GLW() if key == 'online' else (ACCENT() if key == 'linking' else MAIN_DIM())
