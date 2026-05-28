@@ -15,11 +15,13 @@ source.include_exts = py,png,jpg,kv,atlas,ttf
 version = 2.0
 
 # Dependencias Python (recipes de python-for-android)
+# Fijar python3/hostpython3 evita que Buildozer 1.6 use Python 3.14 por defecto,
+# que todavia rompe la compilacion de Kivy 2.3.x en python-for-android master.
 # - kivy: UI
 # - mutagen: metadatos/caratulas (pure python)
 # - pyjnius: acceso a MediaPlayer / permisos Android
 # - openssl + certifi: HTTPS para LRCLIB via urllib
-requirements = python3,kivy==2.3.0,mutagen,pyjnius,openssl,certifi
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,mutagen,pyjnius,openssl,certifi
 
 # Orientacion
 orientation = portrait
