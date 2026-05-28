@@ -37,7 +37,9 @@ android.permissions = INTERNET,READ_EXTERNAL_STORAGE,READ_MEDIA_AUDIO,WAKE_LOCK
 # API / NDK
 android.api = 33
 android.minapi = 21
-android.archs = arm64-v8a,armeabi-v7a
+# arm64-v8a cubre dispositivos Android modernos y evita un fallo de Kivy/SDL
+# en armeabi-v7a con el NDK actual.
+android.archs = arm64-v8a
 
 # Aceptar licencias del SDK automaticamente (para CI)
 android.accept_sdk_license = True
