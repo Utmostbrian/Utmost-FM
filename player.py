@@ -1320,7 +1320,6 @@ class ConfigWindow(tk.Toplevel):
 
         # ---- ventana con diseño propio (sin chrome del SO) ----
         W, H = 560, 900
-        self.overrideredirect(True)
         self.configure(bg=MAIN_GLW())  # actua como borde exterior del tema
         self.resizable(False, False)
         # centrar sobre la ventana principal
@@ -1336,8 +1335,10 @@ class ConfigWindow(tk.Toplevel):
         except Exception:
             self.geometry(f'{W}x{H}')
         self.transient(parent)
+        self.overrideredirect(True)
         self.attributes('-topmost', True)
-        self.after(200, lambda: self._safe_untop())
+        self.after(150, lambda: self._safe_untop())
+        self.after(120, self._take_focus)
         self.bind('<Escape>', lambda e: self.destroy())
 
         # marco interior (deja 2px de borde con el bg exterior = borde del tema)
@@ -1386,6 +1387,7 @@ class ConfigWindow(tk.Toplevel):
         )
         self.folder_entry.insert(0, self._folder)
         self.folder_entry.pack(side='left', fill='x', expand=True, ipady=4)
+        self.folder_entry.bind('<Button-1>', lambda e: e.widget.focus_set())
         tk.Button(folder_row, text=_T('cfg_browse'),
                   font=('Courier', 8, 'bold'),
                   bg=SURFACE0(), fg=MAIN(), activebackground=SURFACE1(),
@@ -1413,6 +1415,7 @@ class ConfigWindow(tk.Toplevel):
         )
         self.user_entry.insert(0, current_user or 'User')
         self.user_entry.pack(fill='x', ipady=6, pady=(0, 12))
+        self.user_entry.bind('<Button-1>', lambda e: e.widget.focus_set())
 
         # estado scan
         self.scan_lbl = tk.Label(outer, text='',
@@ -1566,6 +1569,15 @@ class ConfigWindow(tk.Toplevel):
     def _safe_untop(self):
         try:
             self.attributes('-topmost', False)
+        except Exception:
+            pass
+
+    def _take_focus(self):
+        # con overrideredirect, grab_set + focus_force enrutan el teclado a los Entry
+        try:
+            self.lift()
+            self.focus_force()
+            self.grab_set()
         except Exception:
             pass
 
@@ -2561,6 +2573,7 @@ class SevenFMPlayer(tk.Tk):
             self._smooth_scroll_loop()
             self._update_lyric_highlight()
             self._animate_art()
+            self._update_carol_overlay()
         except tk.TclError:
             pass  # widget destruido durante rebuild de tema
         except Exception as e:
@@ -2768,6 +2781,106 @@ class SevenFMPlayer(tk.Tk):
             self._animate_name_crt()
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ Detalle Carol
+    def _is_carol(self):
+        return (self.username or '').strip().lower() == 'carol'
+
+    def _heart_color(self, size):
+        """Color del corazon segun su tamaño (profundidad) -> adapta al tema."""
+        if size >= 16:
+            return ACCENT()
+        if size >= 13:
+            return MAIN_GLW()
+        if size >= 11:
+            return MAIN()
+        return MAIN_DIM()
+
+    def _make_carol_overlay(self):
+        """Ventana overlay transparente (click-through) para la lluvia de corazones.
+        Se dibuja ENCIMA de todo porque el bg_canvas queda tapado por el contenido."""
+        try:
+            ov = tk.Toplevel(self)
+            ov.overrideredirect(True)
+            ov.attributes('-topmost', True)
+            key = '#0b0b0b'  # color clave transparente (no usado por los temas)
+            try:
+                ov.attributes('-transparentcolor', key)
+            except Exception:
+                ov.destroy()
+                return None
+            ov.configure(bg=key)
+            cv = tk.Canvas(ov, bg=key, highlightthickness=0, bd=0)
+            cv.pack(fill='both', expand=True)
+            ov._canvas = cv
+            ov._parts = []
+            return ov
+        except Exception:
+            return None
+
+    def _update_carol_overlay(self):
+        """Crea/sincroniza/destruye el overlay de corazones segun el estado."""
+        carol = self._is_carol()
+        ov = getattr(self, '_carol_overlay', None)
+        # ocultar mientras hay un dialogo de ajustes abierto (para no taparlo)
+        dialog_open = any(isinstance(ch, ConfigWindow) and ch.winfo_exists()
+                          for ch in self.winfo_children())
+        if not carol:
+            if ov is not None:
+                try: ov.destroy()
+                except Exception: pass
+                self._carol_overlay = None
+            return
+        if dialog_open:
+            if ov is not None:
+                try: ov.withdraw()
+                except Exception: pass
+            return
+        if ov is None or not ov.winfo_exists():
+            ov = self._make_carol_overlay()
+            self._carol_overlay = ov
+            if ov is None:
+                return
+        try:
+            if self.state() == 'iconic':
+                ov.withdraw(); return
+            x = self.winfo_rootx(); y = self.winfo_rooty()
+            w = self.winfo_width(); h = self.winfo_height()
+            if w < 8 or h < 8:
+                return
+            ov.deiconify()
+            ov.geometry(f'{w}x{h}+{x}+{y}')
+            ov.lift()
+        except Exception:
+            return
+        self._draw_overlay_hearts(ov, w, h)
+
+    def _draw_overlay_hearts(self, ov, w, h):
+        cv = ov._canvas
+        try:
+            cv.delete('all')
+        except Exception:
+            return
+        if not ov._parts:
+            for _ in range(46):
+                ov._parts.append({
+                    'x': random.randint(0, max(1, w)),
+                    'y': random.randint(-h, h),
+                    'vy': random.uniform(1.4, 4.0),
+                    'size': random.choice([10, 11, 12, 14, 16, 18]),
+                    'sway': random.uniform(0, 6.28),
+                })
+        for p in ov._parts:
+            p['y'] += p['vy']
+            if p['y'] > h + 18:
+                p['y'] = -18
+                p['x'] = random.randint(0, max(1, w))
+                p['vy'] = random.uniform(1.4, 4.0)
+                p['size'] = random.choice([10, 11, 12, 14, 16, 18])
+            sway = math.sin(self._anim_phase * 0.8 + p['sway']) * 6
+            cv.create_text(p['x'] + sway, p['y'], text='♥',
+                           font=('Courier', p['size']),
+                           fill=self._heart_color(p['size']))
 
     def _draw_bg(self):
         c = self.bg_canvas
