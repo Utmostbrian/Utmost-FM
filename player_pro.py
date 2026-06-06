@@ -2489,6 +2489,8 @@ class SevenFMPlayer(tk.Tk):
         self._mini_mode = False
         self._mini_win = None
         self._mini_art_tk = None
+        self._mini_compact = False
+        self._mini_last_pos = None
 
         # cola UI (dispatch desde hilos)
         self._ui_queue = queue.Queue()
@@ -3871,6 +3873,7 @@ class SevenFMPlayer(tk.Tk):
                          spectrum_mode='compact', lyric_style='classic',
                          art_style='normal', auto_theme=False, fl=None):
         was_mini = self._mini_mode
+        was_compact = self._mini_compact
         if was_mini:
             self._exit_mini_mode()
         global CURRENT_LANG
@@ -3903,6 +3906,7 @@ class SevenFMPlayer(tk.Tk):
                 daemon=True,
             ).start()
         if was_mini:
+            self._mini_compact = was_compact
             self.after(400, self._enter_mini_mode)
 
     def _refresh_theme(self):
@@ -4282,10 +4286,12 @@ class SevenFMPlayer(tk.Tk):
             try:
                 n = (name or '-')
                 a = (artist or '-')
+                nl = 22 if self._mini_compact else 28
+                al = 26 if self._mini_compact else 32
                 self.mini_name_lbl.configure(
-                    text=n[:30] if len(n) <= 30 else n[:29] + '…')
+                    text=n[:nl] if len(n) <= nl else n[:nl - 1] + '…')
                 self.mini_artist_lbl.configure(
-                    text=a[:34] if len(a) <= 34 else a[:33] + '…')
+                    text=a[:al] if len(a) <= al else a[:al - 1] + '…')
                 if art_bytes:
                     self._load_mini_art(art_bytes)
                 else:
@@ -4440,21 +4446,22 @@ class SevenFMPlayer(tk.Tk):
             pass
 
     def _build_mini_window(self):
-        W, H = 390, 110
+        W, H = (220, 320) if self._mini_compact else (390, 110)
         win = tk.Toplevel(self)
         self._mini_win = win
         win.overrideredirect(True)
         win.attributes('-topmost', True)
-        win.configure(bg=MAIN_GLW())   # borde exterior del tema (1px)
-        # position: esquina inferior derecha de la pantalla
+        win.configure(bg=MAIN_GLW())
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        x = sw - W - 20
-        y = sh - H - 60
+        if self._mini_last_pos:
+            x, y = self._mini_last_pos
+        else:
+            x = sw - W - 20
+            y = sh - H - 60
         win.geometry(f'{W}x{H}+{x}+{y}')
         win.resizable(False, False)
 
-        # marco interior
         inner = tk.Frame(win, bg=MANTLE())
         inner.pack(fill='both', expand=True, padx=1, pady=1)
 
@@ -4482,6 +4489,15 @@ class SevenFMPlayer(tk.Tk):
         expand_btn.bind('<Enter>', lambda e: expand_btn.configure(fg=MAIN_GLW()))
         expand_btn.bind('<Leave>', lambda e: expand_btn.configure(fg=MAIN_DIM()))
 
+        # boton alternar modo compacto / extendido
+        compact_sym = '⊞' if self._mini_compact else '⊟'
+        cmp_btn = tk.Label(tbar, text=compact_sym, font=('Courier', 10, 'bold'),
+                           fg=MAIN_DIM(), bg=CRUST(), cursor='hand2', padx=6)
+        cmp_btn.pack(side='right')
+        cmp_btn.bind('<Button-1>', lambda e: self._toggle_mini_compact())
+        cmp_btn.bind('<Enter>', lambda e: cmp_btn.configure(fg=MAIN_GLW()))
+        cmp_btn.bind('<Leave>', lambda e: cmp_btn.configure(fg=MAIN_DIM()))
+
         min_btn = tk.Label(tbar, text='─', font=('Courier', 10, 'bold'),
                            fg=MAIN_DIM(), bg=CRUST(), cursor='hand2', padx=6)
         min_btn.pack(side='right')
@@ -4493,14 +4509,25 @@ class SevenFMPlayer(tk.Tk):
             w.bind('<Button-1>', self._mini_start_drag)
             w.bind('<B1-Motion>', self._mini_do_drag)
 
-        # separador
         tk.Frame(inner, bg=MAIN_GLW(), height=1).pack(fill='x')
 
-        # ---- contenido ----
+        if self._mini_compact:
+            self._build_mini_compact_body(inner)
+        else:
+            self._build_mini_wide_body(inner)
+
+        win.bind('<space>', lambda e: self._play_pause())
+        win.bind('<Right>', lambda e: self._next())
+        win.bind('<Left>', lambda e: self._prev())
+        win.bind('<Escape>', lambda e: self._exit_mini_mode())
+        win.bind('<Control-m>', lambda e: self._exit_mini_mode())
+        win.bind('<Control-M>', lambda e: self._exit_mini_mode())
+
+    def _build_mini_wide_body(self, inner):
+        """Cuerpo horizontal (modo extendido): portada + info + controles."""
         content = tk.Frame(inner, bg=BG())
         content.pack(fill='both', expand=True)
 
-        # portada 72x72
         self.mini_art_cv = tk.Canvas(
             content, bg=CRUST(),
             highlightthickness=1, highlightbackground=MAIN_DK(),
@@ -4510,38 +4537,13 @@ class SevenFMPlayer(tk.Tk):
         if self._current_art_bytes and PIL_AVAILABLE:
             self._load_mini_art(self._current_art_bytes)
 
-        # info + barra de progreso
-        info = tk.Frame(content, bg=BG())
-        info.pack(side='left', fill='both', expand=True, pady=6)
-
-        name, artist, _ = self._current_track_info
-        self.mini_name_lbl = tk.Label(
-            info,
-            text=(name or '-')[:30] if len(name or '') <= 30 else (name or '')[:29] + '…',
-            font=('Courier', 10, 'bold'),
-            fg=MAIN_GLW(), bg=BG(), anchor='w')
-        self.mini_name_lbl.pack(fill='x')
-
-        self.mini_artist_lbl = tk.Label(
-            info,
-            text=(artist or '-')[:34] if len(artist or '') <= 34 else (artist or '')[:33] + '…',
-            font=('Courier', 8),
-            fg=SEC(), bg=BG(), anchor='w')
-        self.mini_artist_lbl.pack(fill='x', pady=(2, 8))
-
-        self.mini_pb_cv = tk.Canvas(
-            info, bg=SURFACE0(), highlightthickness=0, height=4)
-        self.mini_pb_cv.pack(fill='x')
-        self.mini_pb_cv.bind('<Button-1>', self._on_mini_seek)
-        self.mini_pb_cv.bind('<Configure>', lambda e: self._draw_mini_pb())
-
-        # controles de transporte
+        # controles primero para que expand no los aplaste
         ctrl = tk.Frame(content, bg=BG())
-        ctrl.pack(side='right', padx=(0, 10))
+        ctrl.pack(side='right', padx=(4, 10))
 
         def _mb(par, sym, cmd, sz=12):
             b = tk.Label(par, text=sym, font=('Courier', sz, 'bold'),
-                         fg=MAIN(), bg=BG(), cursor='hand2', padx=5)
+                         fg=MAIN(), bg=BG(), cursor='hand2', padx=4)
             b.pack(side='left')
             b.bind('<Button-1>', lambda e: cmd())
             b.bind('<Enter>', lambda e, w=b: w.configure(fg=MAIN_GLW()))
@@ -4550,11 +4552,33 @@ class SevenFMPlayer(tk.Tk):
 
         _mb(ctrl, '⏮', self._prev, sz=11)
         is_pl = self.audio.is_playing and not self.audio.is_paused
-        self.mini_play_btn = _mb(ctrl, '⏸' if is_pl else '⏵',
-                                  self._play_pause, sz=14)
+        self.mini_play_btn = _mb(ctrl, '⏸' if is_pl else '⏵', self._play_pause, sz=14)
         _mb(ctrl, '⏭', self._next, sz=11)
 
-        # drag desde el area de contenido tambien
+        info = tk.Frame(content, bg=BG())
+        info.pack(side='left', fill='both', expand=True, pady=6)
+
+        name, artist, _ = self._current_track_info
+        self.mini_name_lbl = tk.Label(
+            info,
+            text=(name or '-')[:28] if len(name or '') <= 28 else (name or '')[:27] + '…',
+            font=('Courier', 9, 'bold'),
+            fg=MAIN_GLW(), bg=BG(), anchor='w')
+        self.mini_name_lbl.pack(fill='x')
+
+        self.mini_artist_lbl = tk.Label(
+            info,
+            text=(artist or '-')[:32] if len(artist or '') <= 32 else (artist or '')[:31] + '…',
+            font=('Courier', 8),
+            fg=SEC(), bg=BG(), anchor='w')
+        self.mini_artist_lbl.pack(fill='x', pady=(2, 6))
+
+        self.mini_pb_cv = tk.Canvas(
+            info, bg=SURFACE0(), highlightthickness=0, height=4)
+        self.mini_pb_cv.pack(fill='x')
+        self.mini_pb_cv.bind('<Button-1>', self._on_mini_seek)
+        self.mini_pb_cv.bind('<Configure>', lambda e: self._draw_mini_pb())
+
         for w in (content, info, ctrl):
             w.bind('<Button-1>', self._mini_start_drag)
             w.bind('<B1-Motion>', self._mini_do_drag)
@@ -4562,13 +4586,73 @@ class SevenFMPlayer(tk.Tk):
             w.bind('<Button-1>', self._mini_start_drag)
             w.bind('<B1-Motion>', self._mini_do_drag)
 
-        # atajos de teclado en la mini ventana
-        win.bind('<space>', lambda e: self._play_pause())
-        win.bind('<Right>', lambda e: self._next())
-        win.bind('<Left>', lambda e: self._prev())
-        win.bind('<Escape>', lambda e: self._exit_mini_mode())
-        win.bind('<Control-m>', lambda e: self._exit_mini_mode())
-        win.bind('<Control-M>', lambda e: self._exit_mini_mode())
+    def _build_mini_compact_body(self, inner):
+        """Cuerpo vertical Spotify-style: portada grande + nombre + controles."""
+        ART = 192
+        content = tk.Frame(inner, bg=BG())
+        content.pack(fill='both', expand=True)
+
+        self.mini_art_cv = tk.Canvas(
+            content, bg=CRUST(),
+            highlightthickness=0,
+            width=ART, height=ART)
+        self.mini_art_cv.pack(pady=(8, 0), padx=((220 - ART) // 2))
+        self._draw_mini_default_art()
+        if self._current_art_bytes and PIL_AVAILABLE:
+            self._load_mini_art(self._current_art_bytes)
+
+        name, artist, _ = self._current_track_info
+
+        self.mini_name_lbl = tk.Label(
+            content,
+            text=(name or '-')[:22] if len(name or '') <= 22 else (name or '')[:21] + '…',
+            font=('Courier', 10, 'bold'),
+            fg=MAIN_GLW(), bg=BG(), anchor='center', justify='center')
+        self.mini_name_lbl.pack(fill='x', padx=10, pady=(10, 0))
+
+        self.mini_artist_lbl = tk.Label(
+            content,
+            text=(artist or '-')[:26] if len(artist or '') <= 26 else (artist or '')[:25] + '…',
+            font=('Courier', 8),
+            fg=SEC(), bg=BG(), anchor='center', justify='center')
+        self.mini_artist_lbl.pack(fill='x', padx=10, pady=(2, 6))
+
+        self.mini_pb_cv = tk.Canvas(
+            content, bg=SURFACE0(), highlightthickness=0, height=4)
+        self.mini_pb_cv.pack(fill='x', padx=10, pady=(0, 6))
+        self.mini_pb_cv.bind('<Button-1>', self._on_mini_seek)
+        self.mini_pb_cv.bind('<Configure>', lambda e: self._draw_mini_pb())
+
+        ctrl = tk.Frame(content, bg=BG())
+        ctrl.pack(pady=(0, 10))
+
+        def _mb(par, sym, cmd, sz=12):
+            b = tk.Label(par, text=sym, font=('Courier', sz, 'bold'),
+                         fg=MAIN(), bg=BG(), cursor='hand2', padx=8)
+            b.pack(side='left')
+            b.bind('<Button-1>', lambda e: cmd())
+            b.bind('<Enter>', lambda e, w=b: w.configure(fg=MAIN_GLW()))
+            b.bind('<Leave>', lambda e, w=b: w.configure(fg=MAIN()))
+            return b
+
+        _mb(ctrl, '⏮', self._prev, sz=12)
+        is_pl = self.audio.is_playing and not self.audio.is_paused
+        self.mini_play_btn = _mb(ctrl, '⏸' if is_pl else '⏵', self._play_pause, sz=16)
+        _mb(ctrl, '⏭', self._next, sz=12)
+
+        content.bind('<Button-1>', self._mini_start_drag)
+        content.bind('<B1-Motion>', self._mini_do_drag)
+
+    def _toggle_mini_compact(self):
+        try:
+            if self._mini_win and self._mini_win.winfo_exists():
+                self._mini_last_pos = (self._mini_win.winfo_x(), self._mini_win.winfo_y())
+                self._mini_win.destroy()
+        except Exception:
+            pass
+        self._mini_win = None
+        self._mini_compact = not self._mini_compact
+        self._build_mini_window()
 
     def _update_mini_player(self):
         try:
@@ -4613,12 +4697,13 @@ class SevenFMPlayer(tk.Tk):
             c = self.mini_art_cv
             c.delete('all')
             c.configure(bg=CRUST())
-            cx, cy = 36, 36
-            for r in (6, 13, 20, 28):
+            s = c.winfo_reqwidth()
+            cx, cy = s // 2, s // 2
+            for r in (int(s * f) for f in (0.08, 0.18, 0.28, 0.39)):
                 c.create_oval(cx - r, cy - r, cx + r, cy + r,
                               outline=MAIN_DIM(), width=1)
             c.create_text(cx, cy, text='♪',
-                          font=('Courier', 16), fill=MAIN_GLW())
+                          font=('Courier', max(10, s // 5)), fill=MAIN_GLW())
         except Exception:
             pass
 
@@ -4626,10 +4711,11 @@ class SevenFMPlayer(tk.Tk):
         if not PIL_AVAILABLE or not art_bytes:
             return
         crt = (self._art_style == 'crt')
+        size = 192 if self._mini_compact else 72
         def _bg():
             try:
                 img = Image.open(io.BytesIO(art_bytes)).convert('RGB')
-                img = img.resize((72, 72), Image.Resampling.LANCZOS)
+                img = img.resize((size, size), Image.Resampling.LANCZOS)
                 if crt:
                     img = _apply_crt_filter(img)
                 tk_img = ImageTk.PhotoImage(img)
@@ -4645,8 +4731,9 @@ class SevenFMPlayer(tk.Tk):
                 return
             self._mini_art_tk = tk_img
             c = self.mini_art_cv
+            s = c.winfo_reqwidth()
             c.delete('all')
-            c.create_image(36, 36, image=tk_img, anchor='center')
+            c.create_image(s // 2, s // 2, image=tk_img, anchor='center')
         except Exception:
             pass
 

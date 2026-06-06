@@ -1706,6 +1706,12 @@ class SevenFMPlayer(tk.Tk):
         self._sync_state = 'none'    # 'ok' | 'est' | 'none'
         self._fullscreen = False
         self._art_tk = None
+        # ---- mini player ----
+        self._mini_mode = False
+        self._mini_win = None
+        self._mini_art_tk = None
+        self._mini_compact = False
+        self._mini_last_pos = None
         self._current_art_bytes = None  # bytes de la caratula actual (para re-render)
         self._current_track_info = ('-', '-', '-')  # (name, artist, album)
         self._theme_name = 'purple'
@@ -1766,6 +1772,8 @@ class SevenFMPlayer(tk.Tk):
         self.bind('<Left>', lambda e: self._prev())
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.unbind_class('Canvas', '<space>')
+        self.bind('<Control-m>', self._toggle_mini_mode)
+        self.bind('<Control-M>', self._toggle_mini_mode)
 
         # arrancar polling y animacion
         self._start_polling()
@@ -1902,6 +1910,17 @@ class SevenFMPlayer(tk.Tk):
         self.cfg_btn.bind('<Enter>', lambda e: self.cfg_btn.configure(fg=MAIN_GLW()))
         self.cfg_btn.bind('<Leave>', lambda e: self.cfg_btn.configure(fg=MAIN()))
         self.cfg_btn.pack(side='right', padx=(0, 10))
+
+        self.mini_mode_btn = tk.Label(
+            hdr, text='▬',
+            font=('Courier', 11),
+            fg=MAIN(), bg=BG(),
+            padx=4, pady=4, cursor='hand2',
+            bd=0, relief=tk.FLAT, highlightthickness=0)
+        self.mini_mode_btn.bind('<Button-1>', lambda e: self._toggle_mini_mode())
+        self.mini_mode_btn.bind('<Enter>', lambda e: self.mini_mode_btn.configure(fg=MAIN_GLW()))
+        self.mini_mode_btn.bind('<Leave>', lambda e: self.mini_mode_btn.configure(fg=MAIN()))
+        self.mini_mode_btn.pack(side='right', padx=(0, 2))
 
     def _build_left(self, parent):
         col = tk.Frame(parent, bg=BG(), width=320)
@@ -2583,15 +2602,18 @@ class SevenFMPlayer(tk.Tk):
     def _animate(self):
         self._anim_phase += 0.08
         try:
-            self._draw_bg()
-            self._draw_vis()
-            self._draw_progressbar()
-            self._smooth_scroll_loop()
-            self._update_lyric_highlight()
-            self._animate_art()
-            self._update_carol_overlay()
+            if not self._mini_mode:
+                self._draw_bg()
+                self._draw_vis()
+                self._draw_progressbar()
+                self._smooth_scroll_loop()
+                self._update_lyric_highlight()
+                self._animate_art()
+                self._update_carol_overlay()
+            else:
+                self._update_mini_player()
         except tk.TclError:
-            pass  # widget destruido durante rebuild de tema
+            pass
         except Exception as e:
             print('[anim]', e)
         try:
@@ -2836,6 +2858,12 @@ class SevenFMPlayer(tk.Tk):
 
     def _update_carol_overlay(self):
         """Crea/sincroniza/destruye el overlay de corazones segun el estado."""
+        if self._mini_mode:
+            ov = getattr(self, '_carol_overlay', None)
+            if ov is not None:
+                try: ov.withdraw()
+                except Exception: pass
+            return
         carol = self._is_carol()
         ov = getattr(self, '_carol_overlay', None)
         # ocultar mientras hay un dialogo de ajustes abierto (para no taparlo)
@@ -3031,6 +3059,10 @@ class SevenFMPlayer(tk.Tk):
     def _on_config_saved(self, folder, user, theme, lang,
                          spectrum_mode='compact', lyric_style='classic',
                          art_style='normal', auto_theme=False):
+        was_mini = self._mini_mode
+        was_compact = self._mini_compact
+        if was_mini:
+            self._exit_mini_mode()
         global CURRENT_LANG
         CURRENT_LANG = lang
         apply_theme(theme)
@@ -3044,6 +3076,9 @@ class SevenFMPlayer(tk.Tk):
         self._refresh_theme()
         if folder and os.path.isdir(folder):
             threading.Thread(target=self._scan_in_bg, args=(folder,), daemon=True).start()
+        if was_mini:
+            self._mini_compact = was_compact
+            self.after(400, self._enter_mini_mode)
 
     def _refresh_theme(self):
         """Rebuild de toda la UI preservando estado (pista, caratula, letras, status, vol)."""
@@ -3213,6 +3248,23 @@ class SevenFMPlayer(tk.Tk):
         # lanzar precompute del espectro reactivo en background
         if track_id and AUDIO_FFT_AVAILABLE:
             self._kick_spectrum_compute(track_id)
+        # actualizar mini player si esta activo
+        if self._mini_mode:
+            try:
+                n = (name or '-')
+                a = (artist or '-')
+                nl = 22 if self._mini_compact else 28
+                al = 26 if self._mini_compact else 32
+                self.mini_name_lbl.configure(
+                    text=n[:nl] if len(n) <= nl else n[:nl - 1] + '…')
+                self.mini_artist_lbl.configure(
+                    text=a[:al] if len(a) <= al else a[:al - 1] + '…')
+                if art_bytes:
+                    self._load_mini_art(art_bytes)
+                else:
+                    self._draw_mini_default_art()
+            except Exception:
+                pass
 
     def _kick_spectrum_compute(self, track_id):
         with self._spectrum_lock:
@@ -3327,6 +3379,353 @@ class SevenFMPlayer(tk.Tk):
                 self.attributes('-fullscreen', False)
             except Exception:
                 self.state('normal')
+
+    # ------------------------------------------------------------------ Mini Player
+    def _toggle_mini_mode(self, event=None):
+        if self._mini_mode:
+            self._exit_mini_mode()
+        else:
+            self._enter_mini_mode()
+
+    def _enter_mini_mode(self):
+        if self._mini_mode:
+            return
+        self._mini_mode = True
+        self.withdraw()
+        self._build_mini_window()
+
+    def _exit_mini_mode(self):
+        if not self._mini_mode:
+            return
+        self._mini_mode = False
+        try:
+            if self._mini_win and self._mini_win.winfo_exists():
+                self._mini_win.destroy()
+        except Exception:
+            pass
+        self._mini_win = None
+        self._mini_art_tk = None
+        self.deiconify()
+        self.focus_force()
+        try:
+            self.unbind_class('Canvas', '<space>')
+        except Exception:
+            pass
+
+    def _build_mini_window(self):
+        W, H = (220, 320) if self._mini_compact else (390, 110)
+        win = tk.Toplevel(self)
+        self._mini_win = win
+        win.overrideredirect(True)
+        win.attributes('-topmost', True)
+        win.configure(bg=MAIN_GLW())
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        if self._mini_last_pos:
+            x, y = self._mini_last_pos
+        else:
+            x = sw - W - 20
+            y = sh - H - 60
+        win.geometry(f'{W}x{H}+{x}+{y}')
+        win.resizable(False, False)
+
+        inner = tk.Frame(win, bg=MANTLE())
+        inner.pack(fill='both', expand=True, padx=1, pady=1)
+
+        tbar = tk.Frame(inner, bg=CRUST(), height=26)
+        tbar.pack(fill='x')
+        tbar.pack_propagate(False)
+
+        title_lbl = tk.Label(tbar, text='▬  UTMOST.FM',
+                             font=('Courier', 8, 'bold'),
+                             fg=MAIN_GLW(), bg=CRUST())
+        title_lbl.pack(side='left', padx=(10, 0))
+
+        close_btn = tk.Label(tbar, text='✕', font=('Courier', 10, 'bold'),
+                             fg=MAIN_DIM(), bg=CRUST(), cursor='hand2', padx=8)
+        close_btn.pack(side='right')
+        close_btn.bind('<Button-1>', lambda e: self._on_close())
+        close_btn.bind('<Enter>', lambda e: close_btn.configure(fg='#f38ba8'))
+        close_btn.bind('<Leave>', lambda e: close_btn.configure(fg=MAIN_DIM()))
+
+        expand_btn = tk.Label(tbar, text='⤢', font=('Courier', 10, 'bold'),
+                              fg=MAIN_DIM(), bg=CRUST(), cursor='hand2', padx=6)
+        expand_btn.pack(side='right')
+        expand_btn.bind('<Button-1>', lambda e: self._exit_mini_mode())
+        expand_btn.bind('<Enter>', lambda e: expand_btn.configure(fg=MAIN_GLW()))
+        expand_btn.bind('<Leave>', lambda e: expand_btn.configure(fg=MAIN_DIM()))
+
+        compact_sym = '⊞' if self._mini_compact else '⊟'
+        cmp_btn = tk.Label(tbar, text=compact_sym, font=('Courier', 10, 'bold'),
+                           fg=MAIN_DIM(), bg=CRUST(), cursor='hand2', padx=6)
+        cmp_btn.pack(side='right')
+        cmp_btn.bind('<Button-1>', lambda e: self._toggle_mini_compact())
+        cmp_btn.bind('<Enter>', lambda e: cmp_btn.configure(fg=MAIN_GLW()))
+        cmp_btn.bind('<Leave>', lambda e: cmp_btn.configure(fg=MAIN_DIM()))
+
+        min_btn = tk.Label(tbar, text='─', font=('Courier', 10, 'bold'),
+                           fg=MAIN_DIM(), bg=CRUST(), cursor='hand2', padx=6)
+        min_btn.pack(side='right')
+        min_btn.bind('<Button-1>', lambda e: win.iconify())
+        min_btn.bind('<Enter>', lambda e: min_btn.configure(fg=MAIN_GLW()))
+        min_btn.bind('<Leave>', lambda e: min_btn.configure(fg=MAIN_DIM()))
+
+        for w in (tbar, title_lbl):
+            w.bind('<Button-1>', self._mini_start_drag)
+            w.bind('<B1-Motion>', self._mini_do_drag)
+
+        tk.Frame(inner, bg=MAIN_GLW(), height=1).pack(fill='x')
+
+        if self._mini_compact:
+            self._build_mini_compact_body(inner)
+        else:
+            self._build_mini_wide_body(inner)
+
+        win.bind('<space>', lambda e: self._play_pause())
+        win.bind('<Right>', lambda e: self._next())
+        win.bind('<Left>', lambda e: self._prev())
+        win.bind('<Escape>', lambda e: self._exit_mini_mode())
+        win.bind('<Control-m>', lambda e: self._exit_mini_mode())
+        win.bind('<Control-M>', lambda e: self._exit_mini_mode())
+
+    def _build_mini_wide_body(self, inner):
+        content = tk.Frame(inner, bg=BG())
+        content.pack(fill='both', expand=True)
+
+        self.mini_art_cv = tk.Canvas(
+            content, bg=CRUST(),
+            highlightthickness=1, highlightbackground=MAIN_DK(),
+            width=72, height=72)
+        self.mini_art_cv.pack(side='left', padx=(8, 8), pady=6)
+        self._draw_mini_default_art()
+        if self._current_art_bytes and PIL_AVAILABLE:
+            self._load_mini_art(self._current_art_bytes)
+
+        ctrl = tk.Frame(content, bg=BG())
+        ctrl.pack(side='right', padx=(4, 10))
+
+        def _mb(par, sym, cmd, sz=12):
+            b = tk.Label(par, text=sym, font=('Courier', sz, 'bold'),
+                         fg=MAIN(), bg=BG(), cursor='hand2', padx=4)
+            b.pack(side='left')
+            b.bind('<Button-1>', lambda e: cmd())
+            b.bind('<Enter>', lambda e, w=b: w.configure(fg=MAIN_GLW()))
+            b.bind('<Leave>', lambda e, w=b: w.configure(fg=MAIN()))
+            return b
+
+        _mb(ctrl, '⏮', self._prev, sz=11)
+        is_pl = self.audio.is_playing and not self.audio.is_paused
+        self.mini_play_btn = _mb(ctrl, '⏸' if is_pl else '⏵', self._play_pause, sz=14)
+        _mb(ctrl, '⏭', self._next, sz=11)
+
+        info = tk.Frame(content, bg=BG())
+        info.pack(side='left', fill='both', expand=True, pady=6)
+
+        name, artist, _ = self._current_track_info
+        self.mini_name_lbl = tk.Label(
+            info,
+            text=(name or '-')[:28] if len(name or '') <= 28 else (name or '')[:27] + '…',
+            font=('Courier', 9, 'bold'),
+            fg=MAIN_GLW(), bg=BG(), anchor='w')
+        self.mini_name_lbl.pack(fill='x')
+
+        self.mini_artist_lbl = tk.Label(
+            info,
+            text=(artist or '-')[:32] if len(artist or '') <= 32 else (artist or '')[:31] + '…',
+            font=('Courier', 8),
+            fg=SEC(), bg=BG(), anchor='w')
+        self.mini_artist_lbl.pack(fill='x', pady=(2, 6))
+
+        self.mini_pb_cv = tk.Canvas(
+            info, bg=SURFACE0(), highlightthickness=0, height=4)
+        self.mini_pb_cv.pack(fill='x')
+        self.mini_pb_cv.bind('<Button-1>', self._on_mini_seek)
+        self.mini_pb_cv.bind('<Configure>', lambda e: self._draw_mini_pb())
+
+        for w in (content, info, ctrl):
+            w.bind('<Button-1>', self._mini_start_drag)
+            w.bind('<B1-Motion>', self._mini_do_drag)
+        for w in (self.mini_name_lbl, self.mini_artist_lbl):
+            w.bind('<Button-1>', self._mini_start_drag)
+            w.bind('<B1-Motion>', self._mini_do_drag)
+
+    def _build_mini_compact_body(self, inner):
+        ART = 192
+        content = tk.Frame(inner, bg=BG())
+        content.pack(fill='both', expand=True)
+
+        self.mini_art_cv = tk.Canvas(
+            content, bg=CRUST(),
+            highlightthickness=0,
+            width=ART, height=ART)
+        self.mini_art_cv.pack(pady=(8, 0), padx=((220 - ART) // 2))
+        self._draw_mini_default_art()
+        if self._current_art_bytes and PIL_AVAILABLE:
+            self._load_mini_art(self._current_art_bytes)
+
+        name, artist, _ = self._current_track_info
+
+        self.mini_name_lbl = tk.Label(
+            content,
+            text=(name or '-')[:22] if len(name or '') <= 22 else (name or '')[:21] + '…',
+            font=('Courier', 10, 'bold'),
+            fg=MAIN_GLW(), bg=BG(), anchor='center', justify='center')
+        self.mini_name_lbl.pack(fill='x', padx=10, pady=(10, 0))
+
+        self.mini_artist_lbl = tk.Label(
+            content,
+            text=(artist or '-')[:26] if len(artist or '') <= 26 else (artist or '')[:25] + '…',
+            font=('Courier', 8),
+            fg=SEC(), bg=BG(), anchor='center', justify='center')
+        self.mini_artist_lbl.pack(fill='x', padx=10, pady=(2, 6))
+
+        self.mini_pb_cv = tk.Canvas(
+            content, bg=SURFACE0(), highlightthickness=0, height=4)
+        self.mini_pb_cv.pack(fill='x', padx=10, pady=(0, 6))
+        self.mini_pb_cv.bind('<Button-1>', self._on_mini_seek)
+        self.mini_pb_cv.bind('<Configure>', lambda e: self._draw_mini_pb())
+
+        ctrl = tk.Frame(content, bg=BG())
+        ctrl.pack(pady=(0, 10))
+
+        def _mb(par, sym, cmd, sz=12):
+            b = tk.Label(par, text=sym, font=('Courier', sz, 'bold'),
+                         fg=MAIN(), bg=BG(), cursor='hand2', padx=8)
+            b.pack(side='left')
+            b.bind('<Button-1>', lambda e: cmd())
+            b.bind('<Enter>', lambda e, w=b: w.configure(fg=MAIN_GLW()))
+            b.bind('<Leave>', lambda e, w=b: w.configure(fg=MAIN()))
+            return b
+
+        _mb(ctrl, '⏮', self._prev, sz=12)
+        is_pl = self.audio.is_playing and not self.audio.is_paused
+        self.mini_play_btn = _mb(ctrl, '⏸' if is_pl else '⏵', self._play_pause, sz=16)
+        _mb(ctrl, '⏭', self._next, sz=12)
+
+        content.bind('<Button-1>', self._mini_start_drag)
+        content.bind('<B1-Motion>', self._mini_do_drag)
+
+    def _toggle_mini_compact(self):
+        try:
+            if self._mini_win and self._mini_win.winfo_exists():
+                self._mini_last_pos = (self._mini_win.winfo_x(), self._mini_win.winfo_y())
+                self._mini_win.destroy()
+        except Exception:
+            pass
+        self._mini_win = None
+        self._mini_compact = not self._mini_compact
+        self._build_mini_window()
+
+    def _update_mini_player(self):
+        try:
+            if not (self._mini_win and self._mini_win.winfo_exists()):
+                return
+            st = self.audio.get_state()
+            item = st.get('item')
+            if item:
+                name = item.get('name', '-') or '-'
+                artist = ((item.get('artists') or [{}])[0].get('name') or '-')
+                nl = 22 if self._mini_compact else 28
+                al = 26 if self._mini_compact else 32
+                self.mini_name_lbl.configure(
+                    text=name[:nl] if len(name) <= nl else name[:nl - 1] + '…')
+                self.mini_artist_lbl.configure(
+                    text=artist[:al] if len(artist) <= al else artist[:al - 1] + '…')
+            is_pl = st.get('is_playing', False)
+            self.mini_play_btn.configure(text='⏸' if is_pl else '⏵')
+            self._draw_mini_pb(st)
+        except Exception:
+            pass
+
+    def _draw_mini_pb(self, st=None):
+        try:
+            c = self.mini_pb_cv
+            c.delete('all')
+            w = c.winfo_width()
+            if w < 4:
+                return
+            c.create_rectangle(0, 0, w, 4, fill=SURFACE0(), outline='')
+            if st is None:
+                st = self.audio.get_state()
+            dur = ((st.get('item') or {}).get('duration_ms') or 1)
+            prog = st.get('progress_ms', 0)
+            frac = max(0.0, min(1.0, prog / max(1, dur)))
+            if frac > 0.001:
+                c.create_rectangle(0, 0, max(4, int(w * frac)), 4,
+                                   fill=MAIN_GLW(), outline='')
+        except Exception:
+            pass
+
+    def _draw_mini_default_art(self):
+        try:
+            c = self.mini_art_cv
+            c.delete('all')
+            c.configure(bg=CRUST())
+            s = c.winfo_reqwidth()
+            cx, cy = s // 2, s // 2
+            for r in (int(s * f) for f in (0.08, 0.18, 0.28, 0.39)):
+                c.create_oval(cx - r, cy - r, cx + r, cy + r,
+                              outline=MAIN_DIM(), width=1)
+            c.create_text(cx, cy, text='♪',
+                          font=('Courier', max(10, s // 5)), fill=MAIN_GLW())
+        except Exception:
+            pass
+
+    def _load_mini_art(self, art_bytes):
+        if not PIL_AVAILABLE or not art_bytes:
+            return
+        crt = (self._art_style == 'crt')
+        size = 192 if self._mini_compact else 72
+        def _bg():
+            try:
+                img = Image.open(io.BytesIO(art_bytes)).convert('RGB')
+                img = img.resize((size, size), Image.Resampling.LANCZOS)
+                if crt:
+                    img = _apply_crt_filter(img)
+                tk_img = ImageTk.PhotoImage(img)
+                self._ui_dispatch(self._paint_mini_art, tk_img)
+            except Exception:
+                pass
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _paint_mini_art(self, tk_img):
+        try:
+            if not (hasattr(self, 'mini_art_cv') and
+                    self.mini_art_cv.winfo_exists()):
+                return
+            self._mini_art_tk = tk_img
+            c = self.mini_art_cv
+            s = c.winfo_reqwidth()
+            c.delete('all')
+            c.create_image(s // 2, s // 2, image=tk_img, anchor='center')
+        except Exception:
+            pass
+
+    def _mini_start_drag(self, event):
+        self._mini_drag_ox = event.x_root - self._mini_win.winfo_x()
+        self._mini_drag_oy = event.y_root - self._mini_win.winfo_y()
+
+    def _mini_do_drag(self, event):
+        try:
+            x = event.x_root - self._mini_drag_ox
+            y = event.y_root - self._mini_drag_oy
+            self._mini_win.geometry(f'+{x}+{y}')
+        except Exception:
+            pass
+
+    def _on_mini_seek(self, event):
+        try:
+            w = max(1, self.mini_pb_cv.winfo_width())
+            frac = max(0.0, min(1.0, event.x / w))
+            st = self.audio.get_state()
+            dur = ((st.get('item') or {}).get('duration_ms') or 0)
+            if dur:
+                target = int(dur * frac)
+                pygame.mixer.music.play(start=target / 1000.0)
+                self.audio._start_wall = time.time()
+                self.audio._pause_offset_ms = target
+        except Exception:
+            pass
 
     def _on_close(self):
         try:
