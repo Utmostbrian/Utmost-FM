@@ -1582,8 +1582,22 @@ class ConfigWindow(tk.Toplevel):
             pass
 
     def _pick_folder(self):
-        folder = filedialog.askdirectory(parent=self,
-                                         title='Selecciona la carpeta de musica')
+        try:
+            self.attributes('-topmost', False)
+            self.grab_release()
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            folder = filedialog.askdirectory(parent=self,
+                                             title='Selecciona la carpeta de musica')
+        finally:
+            try:
+                self.grab_set()
+                self.lift()
+                self.focus_force()
+            except Exception:
+                pass
         if folder:
             self._folder = folder
             self.folder_entry.delete(0, 'end')
@@ -1750,6 +1764,8 @@ class SevenFMPlayer(tk.Tk):
         self.bind('<space>', lambda e: self._play_pause())
         self.bind('<Right>', lambda e: self._next())
         self.bind('<Left>', lambda e: self._prev())
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.unbind_class('Canvas', '<space>')
 
         # arrancar polling y animacion
         self._start_polling()
@@ -2956,7 +2972,12 @@ class SevenFMPlayer(tk.Tk):
     # ------------------------------------------------------------------ Config
     def _show_config(self):
         creds = load_credentials() or {}
-        ConfigWindow(
+        _restored = [False]
+        def _restore_focus(_e):
+            if not _restored[0]:
+                _restored[0] = True
+                self.after(150, self.focus_force)
+        cfg = ConfigWindow(
             self, self._on_config_saved,
             on_rescan=self._on_rescan_request,
             current_theme=self._theme_name,
@@ -2968,6 +2989,7 @@ class SevenFMPlayer(tk.Tk):
             current_art=self._art_style,
             current_auto_theme=self._auto_theme,
         )
+        cfg.bind('<Destroy>', _restore_focus)
 
     def _toggle_right_panel(self):
         """Oculta/expande la columna derecha (sistema retro / hints)."""
@@ -3305,6 +3327,14 @@ class SevenFMPlayer(tk.Tk):
                 self.attributes('-fullscreen', False)
             except Exception:
                 self.state('normal')
+
+    def _on_close(self):
+        try:
+            pygame.mixer.stop()
+            pygame.mixer.quit()
+        except Exception:
+            pass
+        self.destroy()
 
 
 # ==============================================================================
